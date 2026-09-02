@@ -1,0 +1,6 @@
+{
+  "name": "Bunzo",
+  "description": "نظام مطعم بونزوا المتكامل (Customer + Kitchen KDS + Super Admin) مع قاعدة بيانات سحابية حقيقية وتوثيق فوري",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

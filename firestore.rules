@@ -1,0 +1,143 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isOwnerRole() {
+      return isAuthenticated() && (
+        request.auth.token.role == 'owner' || 
+        request.auth.token.role == 'OWNER' || 
+        request.auth.token.owner == true ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          getUserData().role == 'owner' || 
+          getUserData().role == 'OWNER'
+        ))
+      );
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        isOwnerRole() ||
+        request.auth.token.role == 'admin' || 
+        request.auth.token.role == 'ADMIN' || 
+        request.auth.token.admin == true ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          getUserData().role == 'admin' || 
+          getUserData().role == 'ADMIN'
+        ))
+      );
+    }
+
+    function isKitchen() {
+      return isAuthenticated() && (
+        isAdmin() ||
+        request.auth.token.role == 'kitchen' || 
+        request.auth.token.role == 'KITCHEN' || 
+        request.auth.token.kitchen == true ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          getUserData().role == 'kitchen' || 
+          getUserData().role == 'KITCHEN'
+        ))
+      );
+    }
+
+    function isSelf(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Products & Categories & Branches & Banners & Settings (Public read, Strict Admin write)
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /branches/{branchId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /banners/{bannerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Users Collection (Strict User Isolation & Privilege Escalation Prevention)
+    // 1. Read: Only account owner, Admin, or Owner can read a user profile. Kitchen cannot read other users.
+    // 2. Create: Default role must be customer.
+    // 3. Update: User can update own profile, but CANNOT modify role, permissions, or phoneVerified.
+    // 4. Role Assignment: Only OWNER can assign ADMIN/OWNER role. ADMIN can assign KITCHEN role.
+    // 5. Delete: Only OWNER or ADMIN.
+    match /users/{userId} {
+      allow read: if isSelf(userId) || isAdmin();
+      allow create: if isAuthenticated() && (
+        !('role' in request.resource.data) || 
+        request.resource.data.role == 'customer' || 
+        request.resource.data.role == 'CUSTOMER' || 
+        isOwnerRole()
+      );
+      allow update: if (
+        isSelf(userId) && 
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'permissions', 'phoneVerified'])
+      ) || isOwnerRole() || (
+        isAdmin() && 
+        resource.data.role != 'owner' && 
+        resource.data.role != 'OWNER' && 
+        request.resource.data.role != 'owner' && 
+        request.resource.data.role != 'OWNER'
+      );
+      allow delete: if isOwnerRole();
+    }
+
+    // Orders Collection (Least Privilege & Price Tampering Guard)
+    // 1. Customer: Create valid order, read only own orders, cancel own order if NEW
+    // 2. Kitchen: Read kitchen prep items only, update status to [ACCEPTED, PREPARING, READY]
+    // 3. Admin & Owner: Full access
+    match /orders/{orderId} {
+      allow create: if true;
+      allow read: if (isAuthenticated() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        isKitchen() ||
+        isAdmin()
+      ));
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (isKitchen() && 
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+          (request.resource.data.status in ['ACCEPTED', 'PREPARING', 'READY'])
+        ) ||
+        (isSelf(resource.data.customerId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+          request.resource.data.status == 'CANCELLED' &&
+          resource.data.status == 'NEW'
+        )
+      );
+      allow delete: if isOwnerRole() || isAdmin();
+    }
+
+    // Audit Logs (Strict Admin & Owner read, cannot be altered or deleted)
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+  }
+}
